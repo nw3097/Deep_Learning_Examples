@@ -1,0 +1,111 @@
+# relative to my_mnist_6.py: restore model
+# to see how restore works, let A denote the tf.global_variables_initializer().run() line below, and B denote 
+# the two lines starting with new_saver. We need to toggle A and B. Following these steps: 
+
+# 1. run through the script to see that the accuracy on the validation set is 0.93 (A on, B off)
+# 2. restore the latest model, apply it to validation set (skip training), check that accuracy is 0.93 (A off, B on)
+# 3. run 2000 steps, obtain accuracy on validation set to be 0.95 (A on, B off)
+# 4. run 1000 steps (A on, B off), then stop, then restore (A off, B on), then run another 1000 steps, then apply it to validation set, check that accuracy is 0.95
+# 5. load latest model, at the end of 4, apply it to validation set, check that accuracy is 0.95 (A off, B on)
+
+import argparse
+import sys
+from tensorflow.examples.tutorials.mnist import input_data
+import tensorflow as tf
+import numpy as np
+import os
+
+FLAGS = None
+
+tf.summary.FileWriterCache.clear()
+
+W = tf.Variable(tf.zeros([784, 10]))
+b = tf.Variable(tf.zeros([10]))
+
+def inference(images):
+  return tf.matmul(images, W) + b
+
+def loss(labels, logits):
+  # Define loss and optimizer
+  return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits))
+
+def main(_):
+  
+  # Import data
+  mnist = tf.contrib.learn.datasets.load_dataset("mnist")
+  train_data = tf.data.Dataset.from_tensor_slices(mnist.train.images) # mnist.train.images is np.array
+  train_labels = tf.data.Dataset.from_tensor_slices(np.asarray(mnist.train.labels, dtype=np.int32)).map(lambda z: tf.one_hot(z, 10))
+  train_dataset = tf.data.Dataset.zip((train_data, train_labels)).repeat().batch(100)
+
+  eval_data = tf.data.Dataset.from_tensor_slices(mnist.test.images) 
+  eval_labels = tf.data.Dataset.from_tensor_slices(np.asarray(mnist.test.labels, dtype=np.int32)).map(lambda z: tf.one_hot(z, 10))
+  eval_dataset = tf.data.Dataset.zip((eval_data, eval_labels)).repeat().batch(100)
+
+  # create general iterator
+  iterator = tf.data.Iterator.from_structure(train_dataset.output_types, train_dataset.output_shapes)
+  next_element = iterator.get_next()
+
+  # define initialization operations by dataset type
+  training_init_op = iterator.make_initializer(train_dataset)
+  eval_init_op = iterator.make_initializer(eval_dataset)
+
+  # Add ops to save and restore all the variables.
+  home = os.getenv('HOME')
+  save_path = home + '/Deep_Learning_Examples/MNIST_tensorflow/checkpoints/'
+  model_name = 'my_model'
+  if not os.path.exists(save_path):
+    os.makedirs(save_path)
+  saver = tf.train.Saver()
+  save_path_full = os.path.join(save_path, model_name)
+
+  # a train step involves forward prop: current weights are applied to current batch images to get current prediction,
+  # then compare current prediction against current batch labels to compute loss, then backward prop where the derivatives are
+  # calculated and weights are adjusted
+  x_image = tf.summary.image('input', tf.reshape(next_element[0], [-1, 28, 28, 1]), 3)
+  y = inference(next_element[0])
+  y_historgram = tf.summary.histogram("activation",y)
+  cross_entropy = loss(next_element[1], y)
+  train_step = tf.train.GradientDescentOptimizer(0.5).minimize(cross_entropy)
+  correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(next_element[1], 1))
+  accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+  accuracy_scalar = tf.summary.scalar("accuracy",accuracy)
+
+  # let the session begin
+  sess = tf.InteractiveSession()
+
+  # new_saver = tf.train.import_meta_graph(save_path + '/my_model-1000.meta')
+  # new_saver.restore(sess, tf.train.latest_checkpoint(save_path))
+
+  tf.global_variables_initializer().run()
+  summaries_dir = home + '/Deep_Learning_Examples/MNIST_tensorflow/board'
+  train_writer = tf.summary.FileWriter(summaries_dir + '/train', sess.graph)
+  test_writer = tf.summary.FileWriter(summaries_dir + '/test')
+
+  # Train
+  sess.run(training_init_op)
+  for step in range(1000):
+    sess.run(train_step)
+    if step % 20 == 0:
+      sum1 = sess.run(x_image)
+      sum2 = sess.run(y_historgram)
+      sum3 = sess.run(accuracy_scalar)
+      train_writer.add_summary(sum1,step)
+      train_writer.add_summary(sum2,step)
+      train_writer.add_summary(sum3,step)
+
+    if (step+1) % 200 == 0:
+      save_path = saver.save(sess, save_path_full, step+1)
+      print("Model {} saved in path {}".format(step+1, save_path_full))
+
+  # Test trained model
+  sess.run(eval_init_op)
+  sum4, validation_accuracy = sess.run([accuracy_scalar, accuracy])
+  test_writer.add_summary(sum4)
+  print(validation_accuracy)
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--data_dir', type=str, default='/tmp/tensorflow/mnist/input_data',
+                      help='Directory for storing input data')
+  FLAGS, unparsed = parser.parse_known_args()
+  tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
